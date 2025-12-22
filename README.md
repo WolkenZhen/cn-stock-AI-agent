@@ -51,10 +51,12 @@
 cd cn-stock-AI-agent
 
 # 安装核心依赖
+pip install --upgrade pip
 pip install -r requirements.txt
 
 ```
-
+python3 -m venv venv
+source venv/bin/activate
 ---
 
 ## 运行指南
@@ -118,12 +120,48 @@ python3 main.py --code 600519
 
 ---
 
+
+
+# AI-Stock-Agent: 基于 DeepSeek 驱动的 A 股自进化量化选股系统
+
+[![DeepSeek Powered](https://img.shields.io/badge/LLM-DeepSeek-blue.svg)](https://platform.deepseek.com/)
+[![License-MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+## 🌟 项目亮点
+本项目并非简单的量化脚本，而是一个具备**自进化能力**的选股机器人。
+
+1. **DeepSeek 智能大脑**：每日盘后自动复盘，根据强势股特征（如：是缩量上涨还是放量突破）动态调整因子权重。
+2. **多因子动态评分**：摆脱静态策略失效的困扰，AI 自动根据市场风格（震荡 vs 趋势）切换配置。
+3. **结构化操盘建议**：输出极简、专业的买卖点指导，包含支撑位、阻力位、止损位及均线偏离度。
+
 ## 🌟 亮点功能总结
 
 * **真正的 AI 闭环**：不仅仅是用 LLM 读新闻，而是让 LLM 参与量化核心因子的权重分配。
 * **低门槛实操**：不需要复杂的本地模型部署，直接通过在线 API 实现最强 LLM 的量化赋能。
 * **抗风险设计**：所有 AI 建议均基于严格的技术指标（支撑位/止损位）计算，确保交易逻辑在可控范围内。
 
+---
+
+## 📂 项目结构
+- `config.py`: 配置 API Key、市值门槛及持久化路径。
+- `llm_client.py`: 封装 DeepSeek 接口，处理策略进化逻辑。
+- `trading_signal.py`: 计算 MA5/MA20、RSI、支撑阻力位及交易逻辑。
+- `auto_strategy_optimizer.py`: 主程序，执行全场扫描、AI 评分与结果展示。
+
+---
+
+## 🚀 运行效果展示
+程序运行后，您将获得如下形式的专业分析报告：
+
+```text
+1. 601899 紫金矿业
+   基础信息：最新价16.53元 | 支撑位15.12元 | 阻力位16.78元
+   均线状态：5日(16.16) | 20日(15.42)
+   交易信号：买入/持有
+   操作建议：趋势走强，建议继续持有 | 止损价14.67元 | 目标价17.62元
+-----------------------------------------------------------------
+🧠 DeepSeek 正在复盘今日风格并优化明日策略...
+✅ 策略进化完成！新权重已自动更新：{'涨幅动能': 20, '成交量放大': 40, ...}
 ---
 
 ## ⚠️ 免责声明

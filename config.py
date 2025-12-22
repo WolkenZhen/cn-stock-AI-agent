@@ -10,7 +10,7 @@ SINGLE_STOCK_RATIO = 0.14  # 单只建议仓位
 # --- DeepSeek 在线 API 配置 ---
 LLM_CONFIG = {
     "api_url": "https://api.deepseek.com/chat/completions",
-    "api_key": "你的key", # <--- 记得改这里
+    "api_key": "sk-a84f7971d767458cafeb3e757612ea16", # <--- 记得改这里
     "model_name": "deepseek-chat",
     "temperature": 0.2,
 }
