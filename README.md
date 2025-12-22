@@ -1,3 +1,167 @@
+# AI-Stock-Agent: A Self-Evolving Quantitative Stock Selection System Powered by DeepSeek
+
+## 🚀 Project Overview
+
+AI-Stock-Agent is an **AI-driven short-term quantitative stock selection system** for the Chinese A-share market, enhanced by **DeepSeek Large Language Models (LLMs)**.
+
+Unlike traditional quantitative strategies with static parameters, this project is built around a core concept:
+
+> **AI-driven strategy evolution**.
+
+The system allows an LLM to continuously analyze market behavior and **dynamically adjust factor weights** based on detected market regimes. Just like an experienced human trader, the model emphasizes momentum factors in trending markets and support/technical factors in range-bound markets — enabling the strategy logic to evolve *daily*.
+
+---
+
+## 🧠 From Static Quant to Self-Evolving AI
+
+Traditional quant strategies often fail due to **parameter decay** — a configuration that works for months may suddenly stop performing.
+
+This project addresses that problem by embedding DeepSeek directly into the strategy core:
+
+1. **Dynamic Factor Reweighting**
+   Based on daily strong-stock patterns, DeepSeek reallocates weights across factors such as price momentum, volume expansion, moving averages, and RSI.
+
+2. **Market Regime Reasoning**
+   The LLM analyzes whether the current market favors breakout trends or pullback-based opportunities.
+
+3. **Zero Manual Tuning**
+   No hard-coded parameter changes. DeepSeek automatically updates the `factor_weights.json` configuration.
+
+---
+
+## 📂 Module Overview
+
+| File                         | Role                      | Core Responsibility                                                                                        |
+| ---------------------------- | ------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `config.py`                  | **System Control Center** | Defines DeepSeek API keys, market cap thresholds (default: 5B RMB), volume filters, and persistence paths. |
+| `llm_client.py`              | **AI Brain**              | Wraps DeepSeek APIs, transforming market data into logically reasoned JSON-based factor weights.           |
+| `trading_signal.py`          | **Data Engine**           | Fetches market data via `akshare` and computes MA, RSI, support/resistance levels.                         |
+| `auto_strategy_optimizer.py` | **Automation Pipeline**   | Executes full-market scans, factor scoring, TOP5 selection, and AI-driven evolution loops.                 |
+| `executor.py`                | **Execution Formatter**   | Converts raw signals into human-readable trading suggestion tables.                                        |
+| `explainer.py`               | **Report Generator**      | Produces AI-generated daily strategy reports (`.md`) explaining each stock selection.                      |
+| `main.py`                    | **Single-Stock Analyzer** | CLI tool for deep AI diagnosis by stock code.                                                              |
+
+---
+
+## 🛠️ Environment Setup
+
+### 1. System Requirements
+
+* **OS**: macOS (13.x+), Windows, or Linux
+* **Python**: 3.9 or higher
+
+### 2. DeepSeek API Key
+
+Register on the DeepSeek platform and obtain an API key.
+
+### 3. Installation
+
+```bash
+# Clone the project
+cd cn-stock-AI-agent
+
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+---
+
+## ▶️ Usage Guide
+
+### Step 1: Configure API Key
+
+Edit `config.py`:
+
+```python
+LLM_CONFIG = {
+    "api_url": "https://api.deepseek.com/chat/completions",
+    "api_key": "YOUR_DEEPSEEK_API_KEY",
+    "model_name": "deepseek-chat",
+    "temperature": 0.2,
+}
+```
+
+---
+
+### Step 2: Run Daily Stock Selection & Strategy Evolution
+
+This process scans the entire market, selects the TOP 5 candidates, and lets DeepSeek adjust strategy weights for the next trading day.
+
+```bash
+python3 auto_strategy_optimizer.py
+```
+
+---
+
+### Step 3: Single Stock AI Diagnosis
+
+For in-depth analysis of a specific stock:
+
+```bash
+python3 main.py --code 600519
+```
+
+---
+
+## 📊 Output Artifacts
+
+After execution, the following files will be generated under `strategy_log/`:
+
+1. **`factor_weights.json`** — Latest AI-adjusted factor weights.
+2. **`trading_signals_log.csv`** — Daily trading signals with buy ranges, stop-loss, and target prices.
+3. **`daily_report_YYYY-MM-DD.md`** — AI-generated daily market and strategy report.
+4. **Terminal Output** — Formatted execution-ready tables.
+
+### Example Output
+
+```text
+★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ TODAY'S RECOMMENDED ACTIONS ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★ ★
+Stock        Code      Score     Buy Range            Stop Loss   Position Size
+--------------------------------------------------------------------------------------------
+Kweichow Moutai 600519 88.5      1580.5–1620.0        1533.0      14%
+CATL         300750    85.2      185.0–192.5          179.45     14%
+...
+🧠 DeepSeek is reviewing today’s market regime...
+✅ Strategy evolution completed. Tomorrow’s weights favor volume expansion.
+```
+
+---
+
+## 🌟 Key Highlights
+
+* **True AI Closed Loop** — LLMs directly participate in quantitative factor optimization.
+* **Adaptive Multi-Factor Scoring** — Strategy dynamically shifts between trending and ranging markets.
+* **Explainable Trading Logic** — Every recommendation is grounded in transparent technical indicators.
+* **Low Barrier Deployment** — No local model training required; powered by online LLM APIs.
+
+---
+
+## ⚠️ Disclaimer
+
+This project is for **research and educational purposes only** and does not constitute investment advice. Trading involves risk. Use at your own discretion.
+
+---
+
+## 📜 License
+
+MIT License
+
+---
+
+## 🤝 About the Author
+
+Designed and implemented as an exploration of **LLM-powered decision intelligence systems**, focusing on adaptability, explainability, and real-world engineering constraints.
+
+
+
+
+
+
 
 
 # AI-Stock-Agent: 基于 DeepSeek 驱动的 A 股自进化量化选股系统
