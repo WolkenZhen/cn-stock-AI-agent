@@ -1,114 +1,87 @@
 import argparse
+import akshare as ak
+import json
+from datetime import datetime
 from trading_signal import TradingSignalGenerator
 from llm_client import FreeLLMClient
 from config import *
-import json
+
+def get_stock_name(stock_code: str) -> str:
+    """获取股票名称的辅助函数"""
+    try:
+        # 统一去掉可能的前缀
+        code = stock_code.replace("sh", "").replace("sz", "")
+        df = ak.stock_zh_a_spot_em()
+        row = df[df['代码'] == code]
+        if not row.empty:
+            return row.iloc[0]['名称']
+    except:
+        return "未知股票"
+    return "未知股票"
 
 def analyze_single_stock(stock_code: str):
-    """单只股票详细分析（含LLM报告）"""
-    print(f"🚀 正在分析股票：{stock_code}")
-    print("="*50)
+    """单只股票详细分析（集成 DeepSeek 诊断）"""
+    print(f"🚀 正在启动 AI 深度分析：{stock_code}")
+    print("=" * 65)
     
     try:
         # 1. 初始化工具
-        signal_generator = TradingSignalGenerator(stock_code)
-        llm_client = FreeLLMClient()
+        tsg = TradingSignalGenerator(stock_code)
+        llm = FreeLLMClient()
         
         # 2. 获取基础数据
-        signal_generator.fetch_stock_data()
-        latest_price = signal_generator.latest_price
+        tsg.fetch_stock_data()
+        if tsg.stock_data is None or tsg.stock_data.empty:
+            print(f"❌ 错误：无法获取股票 {stock_code} 的行情数据，请检查网络或代码。")
+            return
+            
+        # 3. 计算核心指标逻辑 (调用我们优化后的 trading_signal)
+        res = tsg.calculate_logic()
+        if not res:
+            print("❌ 错误：指标计算异常。")
+            return
+            
+        stock_name = get_stock_name(stock_code)
         
-        # 3. 计算关键指标
-        ma_data = signal_generator.calculate_ma()
-        support_resistance = signal_generator.calculate_support_resistance()
-        rsi = signal_generator.calculate_rsi()
+        # 4. 输出结构化诊断结果 (满足你要求的格式)
+        print(f"\n诊断结果: {stock_code} {stock_name}")
+        print(f"   基础信息：最新价{res['price']}元 | 支撑位{res['support']}元 | 阻力位{res['resistance']}元")
+        print(f"   均线状态：5日({res['ma']['ma5']}) | 20日({res['ma']['ma20']})")
+        print(f"   交易信号：{res['signal']}")
+        print(f"   操作建议：{res['advice']} | 止损价{res['stop_loss']}元 | 目标价{res['target']}元")
+        print("-" * 65)
+
+        # 5. 调用 DeepSeek 进行逻辑点评
+        print("🧠 正在请求 DeepSeek AI 进行盘面解读...")
         
-        # 4. 生成交易信号
-        default_params = {"short_ma":5, "long_ma":20, "support_days":5, "buy_margin":0.01}
-        trading_signal = signal_generator.generate_signal(default_params)
+        # 构造给 AI 的复盘提示词
+        prompt = f"""
+        作为量化分析专家，请根据以下数据对 {stock_name}({stock_code}) 进行简短复盘：
+        - 当前价格: {res['price']} (支撑:{res['support']}, 阻力:{res['resistance']})
+        - 均线状态: MA5={res['ma']['ma5']}, MA20={res['ma']['ma20']}
+        - 因子分值: {tsg.get_indicators()}
+        请从“趋势强度”和“入场风险”两个维度给出点评，150字以内，语气专业。
+        """
         
-        # 5. 调用LLM生成详细分析报告
-        stock_data_for_llm = {
-            "code": stock_code,
-            "name": get_stock_name(stock_code),
-            "close": round(latest_price, 2),
-            "5d_change": round((signal_generator.stock_data.iloc[-1]['收盘'] / signal_generator.stock_data.iloc[-6]['开盘'] - 1) * 100, 2),
-            "avg_volume": round(signal_generator.stock_data['成交额'].tail(5).mean() / 10000, 2),
-            "market_cap": get_stock_market_cap(stock_code),
-            "score": calculate_stock_score(signal_generator)
-        }
+        # 注意：这里调用的是 llm_client 中的 _call_llm 方法
+        ai_review = llm._call_llm(prompt)
         
-        strategy_params_for_llm = {
-            "short_ma": default_params['short_ma'],
-            "long_ma": default_params['long_ma'],
-            "support": support_resistance['支撑位'],
-            "resistance": support_resistance['阻力位'],
-            "buy_margin": default_params['buy_margin'],
-            "stop_loss": round(support_resistance['支撑位'] * 0.985, 2),
-            "target_price": round(support_resistance['阻力位'] * 1.02, 2)
-        }
-        
-        llm_analysis = llm_client.generate_stock_analysis(stock_data_for_llm, strategy_params_for_llm)
-        
-        # 6. 输出分析结果
-        print("\n📊 基础指标分析：")
-        print(f"当前价格：{latest_price:.2f}元")
-        print(f"近30天均线：短期{ma_data.iloc[-1]['short_ma']:.2f}元 | 长期{ma_data.iloc[-1]['long_ma']:.2f}元")
-        print(f"支撑位：{support_resistance['支撑位']:.2f}元 | 阻力位：{support_resistance['阻力位']:.2f}元")
-        print(f"RSI指标：{rsi}（30-70为合理区间）")
-        print(f"交易信号：{trading_signal['信号类型']} | 信号原因：{trading_signal['信号原因']}")
-        
-        print(f"\n🤖 LLM详细分析报告：")
-        print(llm_analysis)
-        
-        print(f"\n💡 操作建议：")
-        print(f"买入区间：{strategy_params_for_llm['support']:.2f} - {latest_price:.2f}元")
-        print(f"止损价：{strategy_params_for_llm['stop_loss']:.2f}元（跌破立即卖出）")
-        print(f"目标价：{strategy_params_for_llm['target_price']:.2f}元（预期收益2%）")
-        print(f"持仓比例：建议不超过总资金的{SINGLE_STOCK_RATIO*100:.2f}%")
-        
-        # 7. 保存分析报告
-        report = {
-            "股票代码": stock_code,
-            "股票名称": stock_data_for_llm['name'],
-            "分析日期": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "基础指标": {
-                "当前价格": round(latest_price, 2),
-                "支撑位": support_resistance['支撑位'],
-                "阻力位": support_resistance['阻力位'],
-                "RSI指标": rsi,
-                "均线状态": "多头排列" if ma_data.iloc[-1]['short_ma'] > ma_data.iloc[-1]['long_ma'] else "空头排列"
-            },
-            "交易信号": trading_signal,
-            "LLM分析报告": llm_analysis,
-            "操作建议": {
-                "买入区间": f"{strategy_params_for_llm['support']:.2f} - {latest_price:.2f}元",
-                "止损价": strategy_params_for_llm['stop_loss'],
-                "目标价": strategy_params_for_llm['target_price'],
-                "持仓比例限制": f"≤{SINGLE_STOCK_RATIO*100:.2f}%"
-            }
-        }
-        
-        with open(f"strategy_log/single_stock_analysis_{stock_code}_{datetime.now().strftime('%Y%m%d')}.json", "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2)
-        
-        print(f"\n✅ 分析报告已保存至：strategy_log/single_stock_analysis_{stock_code}_{datetime.now().strftime('%Y%m%d')}.json")
+        if ai_review:
+            print(f"\n🤖 AI 深度诊断报告：")
+            print(ai_review)
+        else:
+            print("\n⚠️ AI 诊断接口响应超时，请检查 DeepSeek API Key 或网络。")
+            
+        print("\n" + "=" * 65)
         
     except Exception as e:
-        print(f"\n❌ 分析失败：{str(e)}")
+        print(f"\n❌ 程序运行出错：{str(e)}")
 
-def get_stock_name(stock_code: str) -> str:
-    """获取股票名称"""
-    try:
-        stock_spot = ak.stock_zh_a_spot()
-        stock_info = stock_spot[stock_spot['代码'] == stock_code]
-        return stock_info.iloc[0]['名称'] if not stock_info.empty else "未知股票"
-    except:
-        return "未知股票"
-
-def get_stock_market_cap(stock_code: str) -> float:
-    """获取股票市值"""
-    try:
-        stock_spot = ak.stock_zh_a_spot()
-        stock_info = stock_spot[stock_spot['代码'] == stock_code]
-        return round(pd.to_numeric
+if __name__ == "__main__":
+    # 解析命令行参数
+    parser = argparse.ArgumentParser(description='A股单股AI深度诊断工具')
+    parser.add_argument('--code', type=str, required=True, help='股票代码，例如 600519')
+    args = parser.parse_args()
+    
+    # 执行分析
+    analyze_single_stock(args.code)
