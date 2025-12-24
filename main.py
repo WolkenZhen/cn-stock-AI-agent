@@ -1,15 +1,15 @@
 import argparse
 import akshare as ak
 import json
+import re
 from datetime import datetime
 from trading_signal import TradingSignalGenerator
 from llm_client import FreeLLMClient
 from config import *
 
 def get_stock_name(stock_code: str) -> str:
-    """获取股票名称的辅助函数"""
+    """获取股票名称"""
     try:
-        # 统一去掉可能的前缀
         code = stock_code.replace("sh", "").replace("sz", "")
         df = ak.stock_zh_a_spot_em()
         row = df[df['代码'] == code]
@@ -20,68 +20,65 @@ def get_stock_name(stock_code: str) -> str:
     return "未知股票"
 
 def analyze_single_stock(stock_code: str):
-    """单只股票详细分析（集成 DeepSeek 诊断）"""
-    print(f"🚀 正在启动 AI 深度分析：{stock_code}")
-    print("=" * 65)
+    """单只股票详细分析（补全时间戳、空间分析与美化输出）"""
+    current_full_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    print(f"\n🚀 [AI 深度个股诊断] 启动时间: {current_full_time}")
+    print("=" * 75)
     
     try:
-        # 1. 初始化工具
         tsg = TradingSignalGenerator(stock_code)
         llm = FreeLLMClient()
         
-        # 2. 获取基础数据
         tsg.fetch_stock_data()
         if tsg.stock_data is None or tsg.stock_data.empty:
-            print(f"❌ 错误：无法获取股票 {stock_code} 的行情数据，请检查网络或代码。")
-            return
-            
-        # 3. 计算核心指标逻辑 (调用我们优化后的 trading_signal)
-        res = tsg.calculate_logic()
-        if not res:
-            print("❌ 错误：指标计算异常。")
+            print(f"❌ 错误：无法获取股票 {stock_code} 的行情数据。")
             return
             
         stock_name = get_stock_name(stock_code)
-        
-        # 4. 输出结构化诊断结果 (满足你要求的格式)
-        print(f"\n诊断结果: {stock_code} {stock_name}")
-        print(f"   基础信息：最新价{res['price']}元 | 支撑位{res['support']}元 | 阻力位{res['resistance']}元")
-        print(f"   均线状态：5日({res['ma']['ma5']}) | 20日({res['ma']['ma20']})")
-        print(f"   交易信号：{res['signal']}")
-        print(f"   操作建议：{res['advice']} | 止损价{res['stop_loss']}元 | 目标价{res['target']}元")
-        print("-" * 65)
+        res = tsg.calculate_logic()
+        if not res:
+            print("❌ 错误：指标计算失败。")
+            return
 
-        # 5. 调用 DeepSeek 进行逻辑点评
-        print("🧠 正在请求 DeepSeek AI 进行盘面解读...")
-        
-        # 构造给 AI 的复盘提示词
+        # 空间可视化进度条
+        bar_len = int(max(0, min(res['position_pct'], 100)) / 5)
+        progress_bar = f"[{'#' * bar_len}{'-' * (20 - bar_len)}]"
+
+        print(f"📊 诊断标的：{stock_code} {stock_name}")
+        print(f"   📈 空间位置：支撑 {res['support']} | **最新价 {res['price']}** | 阻力 {res['resistance']}")
+        print(f"   🧭 当前位阶：{progress_bar} {res['position_pct']}% (靠近100%提示短线超买风险)")
+        print(f"   🎯 空间预测：目标价 {res['target']} | 预期收益 **+{res['target_gain']}%**")
+        print(f"   🛡️ 风险防御：建议止损 {res['stop_loss']} | 信号：{res['signal']}")
+        print(f"   📝 核心点评：{res['advice']}")
+        print("-" * 75)
+
+        # 调用 AI 并处理 JSON 格式
+        print("🧠 AI 逻辑分析中...")
+        indicators = tsg.get_indicators()
         prompt = f"""
-        作为量化分析专家，请根据以下数据对 {stock_name}({stock_code}) 进行简短复盘：
-        - 当前价格: {res['price']} (支撑:{res['support']}, 阻力:{res['resistance']})
-        - 均线状态: MA5={res['ma']['ma5']}, MA20={res['ma']['ma20']}
-        - 因子分值: {tsg.get_indicators()}
-        请从“趋势强度”和“入场风险”两个维度给出点评，150字以内，语气专业。
+        作为量化专家，请对 {stock_name}({stock_code}) 进行专业复盘：
+        现价:{res['price']}, 支撑:{res['support']}, 阻力:{res['resistance']}, 弹性分:{indicators.get('价格弹性', 0)}。
+        请直接给出“空间评价”和“博弈建议”。
         """
         
-        # 注意：这里调用的是 llm_client 中的 _call_llm 方法
-        ai_review = llm._call_llm(prompt)
+        raw_analysis = llm._call_llm(prompt)
         
-        if ai_review:
-            print(f"\n🤖 AI 深度诊断报告：")
-            print(ai_review)
-        else:
-            print("\n⚠️ AI 诊断接口响应超时，请检查 DeepSeek API Key 或网络。")
-            
-        print("\n" + "=" * 65)
+        # 尝试从 JSON 中提取文字，如果不是 JSON 则直接显示
+        try:
+            if raw_analysis.startswith('{'):
+                data = json.loads(raw_analysis)
+                print(f"\n💡 AI 空间评价：{data.get('空间爆发力评价', data.get('空间评价', ''))}")
+                print(f"💡 AI 博弈建议：{data.get('操作博弈建议', data.get('博弈建议', ''))}")
+            else:
+                print(f"\n💡 AI 深度解读：\n{raw_analysis.strip()}")
+        except:
+            print(f"\n💡 AI 深度解读：\n{raw_analysis.strip()}")
         
     except Exception as e:
-        print(f"\n❌ 程序运行出错：{str(e)}")
+        print(f"\n❌ 分析失败：{str(e)}")
 
 if __name__ == "__main__":
-    # 解析命令行参数
-    parser = argparse.ArgumentParser(description='A股单股AI深度诊断工具')
-    parser.add_argument('--code', type=str, required=True, help='股票代码，例如 600519')
+    parser = argparse.ArgumentParser(description="AI 单股深度诊断工具")
+    parser.add_argument("--code", type=str, required=True, help="股票代码")
     args = parser.parse_args()
-    
-    # 执行分析
     analyze_single_stock(args.code)
