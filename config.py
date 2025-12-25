@@ -1,30 +1,24 @@
 import os
 
-# --- 选股规模与并发配置 ---
-SCAN_POOL_SIZE = 400       # 扫描全市场活跃度前400的个股
-TOP_CANDIDATES = 25        # 量化初筛保留25只，供AI做深度博弈
-MAX_WORKERS = 12           # 线程池并发数
+# --- 规模配置：全市场深挖 ---
+SCAN_POOL_SIZE = 1000      # 覆盖全市场前 1000 名活跃个股
+TOP_CANDIDATES = 80        # 给 AI 更多选择，便于锁定特定题材
+MAX_WORKERS = 20           
 
-# --- 存储路径 ---
-LOG_DIR = "strategy_log"
-if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR)
+# --- 2025年12月 核心热点行业 (代码通过这些关键词对齐西部材料) ---
+HOT_SECTORS = ["航空航天", "军工", "钛合金", "新材料", "卫星", "核电"]
 
-WEIGHTS_PATH = os.path.join(LOG_DIR, "factor_weights.json")
-HISTORY_PATH = os.path.join(LOG_DIR, "selection_history.csv")
-
-# --- 初始因子权重 (需与 TradingSignalGenerator 指标对应) ---
+# --- 因子权重：从“稳健”转向“暴力美学” ---
 DEFAULT_WEIGHTS = {
-    "涨幅动能": 30,
-    "成交量放大": 20,
-    "均线多头": 20,
-    "价格弹性": 30
+    "行业热度评分": 35,     # 匹配当前最火的商业航天/军工新材料
+    "筹码换手强度": 25,     # 西部材料近期的高换手是关键特征
+    "突破爆发力": 30,       # 寻找斜率最高、振幅最大的个股
+    "资金护盘": 10          # 基础支撑
 }
 
-# --- DeepSeek 配置 ---
 LLM_CONFIG = {
     "api_url": "https://api.deepseek.com/chat/completions",
-    "api_key": "sk-a84f7971d767458cafeb3e757612ea16", 
+    "api_key": "", 
     "model_name": "deepseek-chat",
-    "temperature": 0.3,
+    "temperature": 0.7,     # 提高温度，让 AI 更有想象力和联想能力
 }
