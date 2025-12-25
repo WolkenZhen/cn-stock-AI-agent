@@ -89,6 +89,8 @@ daily_report_YYYY-MM-DD.md — AI-generated strategy report.
 
 中文版本 (Chinese Version)
 AI-Stock-Agent: 基于 DeepSeek 驱动的 A 股自进化量化选股系统
+
+
 🚀 项目简介
 本项目是一款融合了 DeepSeek 大语言模型 增强能力的 A 股短线交易智能化工具。
 不同于传统的静态量化策略，本项目核心在于**“AI 驱动的策略迭代”**：系统通过 DeepSeek 实时分析盘面特征，动态调整因子权重。它能像人类交易员一样，在“趋势市”中调高动能因子，在“震荡市”中调高技术支撑因子，从而实现选股逻辑的每日进化。
