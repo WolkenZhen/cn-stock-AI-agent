@@ -1,74 +1,132 @@
 import pandas as pd
 import akshare as ak
-import json, os, warnings
+import json, os, warnings, time
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from trading_signal import TradingSignalGenerator
 from llm_client import FreeLLMClient
 from config import *
 
-# 忽略数据处理过程中的警告
 warnings.filterwarnings('ignore')
 
 class AutoStrategyOptimizer:
     def __init__(self):
         self.llm = FreeLLMClient()
-        # 默认因子权重配置
-        self.weights = {"涨幅动能": 35, "成交量放大": 20, "均线多头": 15, "价格弹性": 30}
+        self.weights = self._load_weights()
 
-    def run(self):
-        # 补全年月日时间戳
-        current_full_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        print(f"\n" + "=="*25 + f" AI 高空间选股系统 [{current_full_time}] " + "=="*25)
-        print(f"🎯 策略目标：寻找支撑位稳健且预期收益 > 10% 的高弹性标的")
-        
-        try:
-            # 1. 扫描全市场活跃股票
-            df = ak.stock_zh_a_spot_em()
-            df = df[~df['名称'].str.contains('ST|退', na=False)]
-            df['成交额'] = pd.to_numeric(df['成交额'], errors='coerce') / 1e8
-            # 筛选日成交额大于1.5亿的活跃个股，取前150只进行深度诊断
-            df = df[df['成交额'] >= 1.5].head(150) 
-        except Exception as e:
-            print(f"❌ 市场数据抓取失败: {e}")
+    def _load_weights(self):
+        if os.path.exists(WEIGHTS_PATH):
+            try:
+                with open(WEIGHTS_PATH, 'r') as f: return json.load(f)
+            except: pass
+        return DEFAULT_WEIGHTS
+
+    def _save_weights(self, weights):
+        with open(WEIGHTS_PATH, 'w') as f: json.dump(weights, f, indent=2)
+
+    def track_and_evolve(self):
+        """跟踪历史表现并进化策略"""
+        if not os.path.exists(HISTORY_PATH):
+            print("ℹ️  首次运行，尚无历史数据可跟踪。")
             return
 
-        scored_list = []
-        for _, row in df.iterrows():
+        try:
+            history_df = pd.read_csv(HISTORY_PATH)
+            last_date = history_df['日期'].max()
+            last_picks = history_df[history_df['日期'] == last_date]
+            
+            perf_list = []
+            for _, s in last_picks.iterrows():
+                tsg = TradingSignalGenerator(s['代码'])
+                tsg.fetch_stock_data()
+                if tsg.latest_price > 0:
+                    chg = round((tsg.latest_price / s['推荐价'] - 1) * 100, 2)
+                    perf_list.append(f"{s['名称']}: 推荐价{s['推荐价']}->现价{tsg.latest_price} ({chg}%)")
+            
+            if perf_list:
+                report = "\n".join(perf_list)
+                print(f"📊 历史表现反馈：\n{report}")
+                new_w = self.llm.evolve_strategy(report, self.weights)
+                if new_w != self.weights:
+                    print(f"💡 AI 策略进化！权重更新：{new_w}")
+                    self.weights = new_w
+                    self._save_weights(new_w)
+        except Exception as e:
+            print(f"⚠️ 历史跟踪失败: {e}")
+
+    def fetch_market_with_retry(self, retries=3):
+        """修复 JSONDecodeError：增加 API 重试逻辑"""
+        for i in range(retries):
+            try:
+                df = ak.stock_zh_a_spot_em()
+                if df is not None and not df.empty: return df
+            except Exception as e:
+                print(f"🔄 数据接口请求中 (尝试 {i+1}/{retries})...")
+                time.sleep(2)
+        return None
+
+    def worker(self, row):
+        try:
             tsg = TradingSignalGenerator(row['代码'])
             tsg.fetch_stock_data()
             inds = tsg.get_indicators()
-            
-            if not inds: continue
-            
-            # 计算加权综合评分
+            if not inds: return None
             score = sum(inds.get(k, 0) * (self.weights.get(k, 25)/100) for k in self.weights)
             res = tsg.calculate_logic()
-            
-            # 核心筛选逻辑：预期收益率需接近或超过10%
-            if res and res['target_gain'] >= 9.5: 
-                res.update({'name': row['名称'], 'code': row['代码'], 'total_score': score})
-                scored_list.append(res)
+            if res:
+                res.update({'name': row['名称'], 'code': row['代码'], 'total_score': round(score, 1)})
+                return res
+        except: return None
 
-        # 取评分最高的前5名
-        top_stocks = sorted(scored_list, key=lambda x: x['total_score'], reverse=True)[:5]
-
-        print("\n" + "—"*40 + " 今日 AI 10% 潜力股空间报告 " + "—"*40)
+    def run(self):
+        # 1. 策略进化
+        self.track_and_evolve()
         
-        if not top_stocks:
-            print("💡 当前市场波幅较小，未找到符合 10% 预期收益的潜力标的。")
+        print(f"\n🚀 [AI 进化选股引擎] 启动：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        for i, s in enumerate(top_stocks):
-            # 格式化输出位阶进度条
-            bar_len = int(max(0, min(s['position_pct'], 100)) / 5)
-            progress_bar = f"[{'#' * bar_len}{'-' * (20 - bar_len)}]"
+        # 2. 抓取市场活跃数据
+        df = self.fetch_market_with_retry()
+        if df is None:
+            print("❌ 无法连接到行情服务器，请检查网络或稍后再试。")
+            return
             
-            print(f"{i+1}. **{s['code']} {s['name']}** [潜力评分: {s['total_score']:.1f}]")
-            print(f"   📈 空间位置：支撑 {s['support']} | **最新价 {s['price']}** | 阻力 {s['resistance']}")
-            print(f"   📊 当前位阶：{progress_bar} {s['position_pct']}% (越低安全边际越高)")
-            print(f"   🎯 盈利预测：目标价 {s['target']} | 预期收益 **+{s['target_gain']}%**")
-            print(f"   🛡️ 风险防御：止损价 {s['stop_loss']} | 信号状态：{s['signal']}")
-            print(f"   📝 专家点评：{s['advice']}")
-            print("-" * 105)
+        df = df[~df['名称'].str.contains('ST|退', na=False)]
+        df['成交额'] = pd.to_numeric(df['成交额'], errors='coerce') / 1e8
+        df = df.sort_values(by='成交额', ascending=False).head(SCAN_POOL_SIZE)
+
+        # 3. 多线程诊断
+        all_results = []
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = [executor.submit(self.worker, row) for _, row in df.iterrows()]
+            for f in as_completed(futures):
+                res = f.result()
+                if res: all_results.append(res)
+
+        # 4. 量化初筛 -> AI 最终决策
+        candidates = sorted(all_results, key=lambda x: x['total_score'], reverse=True)[:TOP_CANDIDATES]
+        if not candidates:
+            print("💡 未能找到符合条件的候选股。")
+            return
+
+        final_indices = self.llm.ai_final_selection(candidates)
+        top_5 = [candidates[i] for i in final_indices if i < len(candidates)]
+
+        # 5. 输出报告并持久化
+        new_picks = []
+        print("\n" + "★"*40 + " AI 深度决策选股报告 (TOP 5) " + "★"*40)
+        for i, s in enumerate(top_5):
+            bar = f"[{'#' * int(s['position_pct']/5)}{'-' * (20 - int(s['position_pct']/5))}]"
+            print(f"{i+1}. {s['code']} {s['name']} | 得分:{s['total_score']} | 现价:{s['price']} | 预期:+{s['target_gain']}%")
+            print(f"   位阶：{bar} {s['position_pct']}% | 支撑:{s['support']} | 阻力:{s['resistance']}")
+            new_picks.append({"日期": datetime.now().strftime("%Y-%m-%d"), "代码": s['code'], "名称": s['name'], "推荐价": s['price']})
+        print("-" * 100)
+
+        # 保存结果用于明日跟踪
+        new_df = pd.DataFrame(new_picks)
+        if os.path.exists(HISTORY_PATH):
+            new_df.to_csv(HISTORY_PATH, mode='a', header=False, index=False)
+        else:
+            new_df.to_csv(HISTORY_PATH, index=False)
 
 if __name__ == "__main__":
     AutoStrategyOptimizer().run()
