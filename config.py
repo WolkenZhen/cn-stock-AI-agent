@@ -20,5 +20,5 @@ LLM_CONFIG = {
     "api_url": "https://api.deepseek.com/chat/completions",
     "api_key": "", 
     "model_name": "deepseek-chat",
-    "temperature": 0.7,     # 提高温度，让 AI 更有想象力和联想能力
+    "temperature": 0.2,     # 提高温度，让 AI 更有想象力和联想能力
 }
