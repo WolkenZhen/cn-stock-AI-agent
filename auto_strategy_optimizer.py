@@ -10,6 +10,7 @@ warnings.filterwarnings('ignore')
 class AutoStrategyOptimizer:
     def __init__(self):
         self.llm = FreeLLMClient()
+        # 确保 Key 与 TradingSignalGenerator 输出一致
         self.weights = {"趋势": 50, "动能": 20, "成交": 15, "弹性": 15}
         self.log_dir = "strategy_log"
         self.hist_path = os.path.join(self.log_dir, "selection_history.csv")
@@ -19,12 +20,10 @@ class AutoStrategyOptimizer:
         if not os.path.exists(self.hist_path): return "暂无历史记录"
         try:
             df = pd.read_csv(self.hist_path, quotechar='"', on_bad_lines='skip')
-            if df.empty or 'price' not in df.columns: return "记录为空或格式不兼容"
-            
+            if df.empty or 'price' not in df.columns: return "记录为空"
             df['price'] = pd.to_numeric(df['price'], errors='coerce')
             recent = df.dropna(subset=['price']).tail(10).copy()
-            if recent.empty: return "无有效历史价格数据"
-
+            
             current_spot = ak.stock_zh_a_spot_em()
             current_spot['最新价'] = pd.to_numeric(current_spot['最新价'], errors='coerce')
             
@@ -39,30 +38,26 @@ class AutoStrategyOptimizer:
                         profit = (float(now_val) / float(old_val) - 1) * 100
                         feedback.append(f"{row['name']}({code}): {profit:.1f}%")
             return " | ".join(feedback) if feedback else "正在匹配实时行情..."
-        except Exception as e:
-            return f"反馈数据解析异常: {e}"
+        except: return "反馈加载中"
 
-    def evolve(self):
+    def run(self):
+        print(f"\n🚀 [AI 进化选股引擎] 启动：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         fb = self._get_feedback()
         print(f"📊 近期表现：{fb}")
+        
         if "%" in fb:
             new_w = self.llm.evolve_strategy(fb, self.weights)
-            if new_w and all(k in new_w for k in ["趋势", "动能", "成交", "弹性"]):
+            if new_w and all(k in new_w for k in self.weights):
                 self.weights = new_w
                 print(f"📈 权重自动优化：{self.weights}")
 
-    def run(self):
-        # 补全日期和时间
-        print(f"\n🚀 [AI 进化选股引擎] 启动：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        self.evolve()
+        print("🧠 正在同步 AI 市场热点并分析专家维度...")
+        hotspots = self.llm.analyze_market_hotspots() # 后台分析，不再直接 print
 
-        print("🧠 正在同步 AI 市场热点...")
-        hotspots = self.llm.analyze_market_hotspots()
-
+        # 量化初筛选
         df = ak.stock_zh_a_spot_em()
-        # 初始过滤：成交额 > 6亿，剔除ST
-        df = df[(df['成交额'] > 600000000) & (~df['名称'].str.contains('ST'))]
-        df = df.sort_values(by='成交额', ascending=False).head(250)
+        df = df[(df['成交额'] > 600000000) & (~df['名称'].str.contains('ST|退'))]
+        df = df.sort_values(by='成交额', ascending=False).head(200)
 
         pool = []
         for _, row in df.iterrows():
@@ -71,6 +66,7 @@ class AutoStrategyOptimizer:
             inds = tsg.get_indicators()
             if not inds or inds.get("趋势", 0) < 1: continue
             
+            # 关键修复：确保 inds 的 key 与 self.weights 对应
             score = sum(inds.get(k, 0) * (v/100) for k, v in self.weights.items())
             res = tsg.calculate_logic()
             if res:
@@ -78,32 +74,37 @@ class AutoStrategyOptimizer:
                 pool.append(res)
 
         candidates = sorted(pool, key=lambda x: x['score'], reverse=True)[:35]
-        cand_str = "\n".join([f"{i}. {c['name']}({c['code']}) Score:{c['score']:.1f}" for i, c in enumerate(candidates)])
+        cand_str = "\n".join([f"编号:{i} | {c['name']}({c['code']}) | 技术评分:{c['score']:.1f}" for i, c in enumerate(candidates)])
         
-        indices = self.llm.ai_final_selection_with_prompt(f"热点:{hotspots}\n池:\n{cand_str}\n选出5个最稳个股编号。")
+        # DeepSeek 专家最终决策
+        indices = self.llm.ai_expert_selection(f"【热点环境】:{hotspots}\n【量化候选池】:\n{cand_str}")
         
-        # 优化：去重并提取前5个唯一索引
-        unique_indices = []
+        seen_codes = set()
+        top_5 = []
         for idx in indices:
-            if idx not in unique_indices and idx < len(candidates):
-                unique_indices.append(idx)
-        top_5 = [candidates[i] for i in unique_indices[:5]]
+            if idx < len(candidates):
+                item = candidates[idx]
+                if item['code'] not in seen_codes:
+                    top_5.append(item)
+                    seen_codes.add(item['code'])
+                    if len(top_5) == 5: break
+
+        # 如果 AI 抽风返回编号不对，兜底取前5
+        if not top_5: top_5 = candidates[:5]
 
         # 记录
         pd.DataFrame(top_5)[['code','name','score','price']].to_csv(self.hist_path, mode='a', index=False, quoting=csv.QUOTE_ALL)
 
         print("\n" + "★"*48 + " TOP 5 AI 深度决策报告 " + "★"*48)
         for i, s in enumerate(top_5):
-            pos = int(s['position_pct'] / 5)
-            pos_bar = f"[{'#' * pos}{'-' * (20 - pos)}]"
-            
+            pos_val = int(s['position_pct']/5)
+            pos_bar = f"[{'#' * pos_val}{'-' * (20 - pos_val)}]"
             print(f"{i+1}. {s['code']} | {s['name']} | 🏆 综合评分: {s['score']:.1f}")
-            print(f"   💰 财务参考：现价: {s['price']} | 支撑: {s['support']} | 阻力: {s['resistance']} | 位阶: {pos_bar} {s['position_pct']}%")
-            print(f"   🎯 操盘计划：预期涨幅: +{s['target_gain']}% | 目标价: {s['target']} | 止损价: {s['stop_loss']} (ATR动态)")
+            print(f"   💰 财务参考：现价: {s['price']} | 支撑: {s['support']} | 位阶: {pos_bar} {s['position_pct']}%")
+            print(f"   🎯 操盘计划：预期涨幅: +{s['target_gain']}% | 目标价: {s['target']} | 止损价: {s['stop_loss']}")
             print("-" * 110)
         
-        # 修复：删除 [:150] 限制，输出完整热点分析
-        print(f"💡 AI 今日关注方向:\n{hotspots}")
+        print(f"💡 AI 选股逻辑已融合今日热点（{len(hotspots)}字策略已执行）。")
 
 if __name__ == "__main__":
     AutoStrategyOptimizer().run()

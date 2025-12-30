@@ -19,14 +19,12 @@ class TradingSignalGenerator:
     def get_indicators(self):
         if self.stock_data is None or len(self.stock_data) < 65: return {}
         df = self.stock_data
-        
         curr = df['收盘'].iloc[-1]
         ma20 = df['收盘'].rolling(20).mean().iloc[-1]
-        ma20_prev = df['收盘'].rolling(20).mean().iloc[-2]
         ma60 = df['收盘'].rolling(60).mean().iloc[-1]
         
-        # 趋势得分（100或0）
-        is_uptrend = (curr > ma60) and (ma20 > ma20_prev) and (curr > ma20)
+        # 只要 key 跟 AutoStrategyOptimizer.weights 保持一致，分数就不会为0
+        is_uptrend = (curr > ma60) and (curr > ma20) and (ma20 > df['收盘'].rolling(20).mean().iloc[-2])
         trend_score = 100 if is_uptrend else 0
         
         momentum = (df['收盘'].iloc[-1] / df['收盘'].iloc[-20] - 1) * 100
@@ -44,7 +42,6 @@ class TradingSignalGenerator:
         if self.stock_data is None or self.stock_data.empty: return None
         df = self.stock_data
         price = df['收盘'].iloc[-1]
-        
         support = round(df['最低'].tail(20).min(), 2)
         resistance = round(df['最高'].tail(20).max(), 2)
         range_size = resistance - support
