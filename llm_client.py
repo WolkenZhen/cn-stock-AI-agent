@@ -22,21 +22,30 @@ class FreeLLMClient:
         except: return None
 
     def analyze_market_hotspots(self):
-        # 增加提取关键词的要求，用于代码层面的强制匹配
-        prompt = "总结今日A股最火的3个产业政策方向，并为每个方向提供2个核心关键词（如：半导体, 存储）。格式要求：[政策分析文本] ### 关键词1, 关键词2, 关键词3"
+        # 优化提示词，确保分隔符唯一
+        prompt = "总结今日A股最火的3个产业政策方向，并为每个方向提供2个核心关键词（如：半导体, 存储）。\n格式要求：[分析文本] ### 关键词1, 关键词2, 关键词3"
         res = self._call_llm(prompt)
-        if "###" in res:
-            text, keys = res.split("###")
-            keywords = [k.strip() for k in keys.split(",") if len(k.strip()) > 0]
-            return text.strip(), keywords
-        return res, []
+        
+        if res and "###" in res:
+            # 修复点：使用 rsplit(',', 1) 的逻辑或处理多段分割
+            parts = res.split("###")
+            # 取最后一部分作为关键词，其余部分合并为文本
+            keywords_part = parts[-1].strip()
+            analysis_text = " ".join(parts[:-1]).strip()
+            
+            # 清洗关键词，去掉可能的句号
+            keywords = [k.strip().replace("。", "") for k in keywords_part.split(",") if len(k.strip()) > 0]
+            return analysis_text, keywords
+        
+        return res if res else "分析失败", []
 
     def evolve_strategy(self, history_str, current_weights):
         # 支持 5 个权重的进化逻辑
         prompt = f"历史表现：{history_str}。当前权重：{current_weights}。请微调权重。要求：返回JSON，Key必须是：'趋势'、'动能'、'成交'、'弹性'、'专家'。"
         res = self._call_llm(prompt, "你是一个量化策略优化专家")
         try:
-            return json.loads(re.search(r'\{.*\}', res, re.DOTALL).group())
+            match = re.search(r'\{.*\}', res, re.DOTALL)
+            return json.loads(match.group()) if match else None
         except: return None
 
     def ai_expert_selection(self, context):
