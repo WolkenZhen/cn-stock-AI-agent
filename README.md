@@ -33,8 +33,10 @@ pip install -r requirements.txt
     "model_name": "deepseek-chat",
     "temperature": 0.3,
 }
-Step 2: Run Daily Evolution & SelectionThis performs: Performance Review -> Hotspot Analysis -> Market Scan -> Final TOP5.Bashpython3 auto_strategy_optimizer.py
-Step 3: Single Stock AI DiagnosisAnalyze any specific stock (e.g., Kweichow Moutai):Bashpython3 main.py --code 600519
+Step 2: Run Daily Evolution & SelectionThis performs: Performance Review -> Hotspot Analysis -> Market Scan -> Final TOP5.Bash
+python3 auto_strategy_optimizer.py
+Step 3: Single Stock AI DiagnosisAnalyze any specific stock (e.g., Kweichow Moutai):Bash
+python3 main.py --code 600519
 
 
 中文版本 (Chinese Version)AI-Stock-Agent: 基于 DeepSeek 驱动的 A 股自进化量化选股系统
@@ -69,8 +71,14 @@ pip install --upgrade pip
 
 # 5. 安装依赖
 pip install -r requirements.txt
-▶️ 运行指南第一步：配置 API编辑 config.py，在 api_key 处填入你的 DeepSeek Key。第二步：运行每日选股与策略进化系统将自动执行：复盘昨日 -> 锁定今日热点 -> 全场打分 -> AI 决策。Bashpython3 auto_strategy_optimizer.py
-第三步：获取单只股票 AI 深度诊断输入股票代码获取 DeepSeek 的专业意见：Bashpython3 main.py --code 002149
+▶️ 运行指南第一步：配置 API编辑 config.py，在 api_key 处填入你的 DeepSeek Key。第二步：运行每日选股与策略进化系统将自动执行：复盘昨日 -> 锁定今日热点 -> 全场打分 -> AI 决策。Bash
+
+python3 auto_strategy_optimizer.py
+
+第三步：获取单只股票 AI 深度诊断输入股票代码获取 DeepSeek 的专业意见：Bash
+
+python3 main.py --code 002149
+
 📊 示例输出Plaintext🚀 [AI 进化选股引擎] 启动...
 🔄 正在执行量化闭环进化... 基于昨日反馈修正权重。
 🧠 正在通过 DeepSeek 检索实时盘面热点... 锁定：AI应用、低空经济。
