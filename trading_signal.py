@@ -7,68 +7,67 @@ class TradingSignalGenerator:
     def __init__(self, stock_code: str):
         self.stock_code = stock_code
         self.stock_data = None
-        self.industry = ""
 
     def fetch_stock_data(self):
         end = datetime.now().strftime("%Y%m%d")
         start = (datetime.now() - timedelta(days=160)).strftime("%Y%m%d")
         try:
             symbol = self.stock_code.replace("sh", "").replace("sz", "")
-            # 获取历史数据
             self.stock_data = ak.stock_zh_a_hist(symbol=symbol, period="daily", start_date=start, end_date=end, adjust="qfq")
         except: self.stock_data = None
 
     def get_indicators(self, name="", hot_keywords=[]):
-        """
-        新增 hot_keywords: LLM 提取的今日热点关键词
-        """
         if self.stock_data is None or len(self.stock_data) < 65: return {}
         df = self.stock_data
         curr = df['收盘'].iloc[-1]
-        ma20 = df['收盘'].rolling(20).mean().iloc[-1]
-        ma60 = df['收盘'].rolling(60).mean().iloc[-1]
+        ma20, ma60 = df['收盘'].rolling(20).mean().iloc[-1], df['收盘'].rolling(60).mean().iloc[-1]
         
-        # 1. 趋势评分
-        is_uptrend = (curr > ma60) and (curr > ma20)
-        trend_score = 100 if is_uptrend else 20
-        
-        # 2. 动能评分
+        trend = 100 if (curr > ma60 and curr > ma20) else 20
         momentum = (df['收盘'].iloc[-1] / df['收盘'].iloc[-20] - 1) * 100
-        
-        # 3. 成交评分
         vol_ratio = df['成交量'].iloc[-1] / df['成交量'].tail(10).mean()
-        
-        # 4. 弹性评分
         amplitude = ((df['最高'] - df['最低']) / df['收盘'].shift(1)).tail(5).mean() * 100
-
-        # 5. 【新增】专家因子评分 (基于关键词匹配)
-        expert_score = 0
-        for kw in hot_keywords:
-            if kw in name: # 匹配股票名称（如“中际旭创”含“创”或根据行业匹配）
-                expert_score = 100
-                break
+        expert = 100 if any(k in name for k in hot_keywords) else 0
         
-        return {
-            "趋势": trend_score, 
-            "动能": round(max(0, momentum * 5), 1), 
-            "成交": round(vol_ratio * 15, 1), 
-            "弹性": round(amplitude * 10, 1),
-            "专家": expert_score
-        }
+        return {"趋势": trend, "动能": round(max(0, momentum * 5), 1), "成交": round(vol_ratio * 15, 1), 
+                "弹性": round(amplitude * 10, 1), "专家": expert}
 
-    def calculate_logic(self):
+    def calculate_logic(self, cost_price=None):
         if self.stock_data is None or self.stock_data.empty: return None
         df = self.stock_data
         price = df['收盘'].iloc[-1]
-        support = round(df['最低'].tail(20).min(), 2)
-        target_gain = round(((df['最高'] - df['最低']) / df['最低']).tail(10).mean() * 6 * 100, 2)
         
-        # 计算位阶
-        low, high = df['最低'].tail(60).min(), df['最高'].tail(60).max()
-        pos_pct = round((price - low) / (high - low) * 100, 1) if high != low else 50
+        # 核心：计算位阶、支撑、阻力
+        low_60, high_60 = df['最低'].tail(60).min(), df['最高'].tail(60).max()
+        pos_pct = round((price - low_60) / (high_60 - low_60) * 100, 1) if high_60 != low_60 else 50
+        support = round(df['最低'].tail(10).min(), 2)
+        resistance = round(df['最高'].tail(10).max(), 2)
+        
+        atr = (df['最高'] - df['最低']).tail(5).mean() 
+        
+        # 1. 委托买入价 (针对准备买入场景)
+        entrust_buy = round(price - (atr * 0.45), 2)
+        
+        # 2. 委托卖出价 (针对已持仓场景)
+        entrust_sell = 0
+        status = "未持仓"
+        if cost_price:
+            cost = float(cost_price)
+            break_even = round(cost * 1.003, 2)
+            if price > cost:
+                entrust_sell = round(max(price * 1.025, resistance), 2)
+                status = "盈利持有中"
+            else:
+                entrust_sell = round(max(break_even, price + (atr * 0.6)), 2)
+                status = "亏损套牢中"
 
         return {
-            "price": price, "support": support, "position_pct": pos_pct,
-            "target": round(price * (1 + target_gain/100), 2),
-            "target_gain": target_gain, "stop_loss": round(price * 0.92, 2)
+            "price": price, 
+            "position_pct": pos_pct, 
+            "support": support, 
+            "resistance": resistance,
+            "entrust_buy": entrust_buy, 
+            "entrust_sell": entrust_sell,
+            "status": status, 
+            "target": round(price * 1.15, 2), 
+            "stop_loss": round(price * 0.92, 2)
         }
