@@ -1,6 +1,6 @@
 import pandas as pd
 import akshare as ak
-import os, warnings, csv
+import os, warnings, csv, json, time
 from datetime import datetime
 from trading_signal import TradingSignalGenerator
 from llm_client import FreeLLMClient
@@ -10,93 +10,95 @@ warnings.filterwarnings('ignore')
 class AutoStrategyOptimizer:
     def __init__(self):
         self.llm = FreeLLMClient()
-        self.weights = {"趋势": 30, "动能": 15, "成交": 15, "弹性": 15, "专家": 25}
+        self.weights = {"趋势": 30, "动能": 20, "成交": 15, "弹性": 15, "专家": 20}
         self.log_dir = "strategy_log"
         self.hist_path = os.path.join(self.log_dir, "selection_history.csv")
         if not os.path.exists(self.log_dir): os.makedirs(self.log_dir)
 
-    def _get_feedback(self):
+    def _get_feedback_str(self):
         if not os.path.exists(self.hist_path): return "暂无历史记录"
         try:
-            df = pd.read_csv(self.hist_path, quotechar='"', on_bad_lines='skip')
-            if df.empty or 'price' not in df.columns: return "记录为空"
-            # 获取实时价格进行收益计算
-            df['price'] = pd.to_numeric(df['price'], errors='coerce')
-            recent = df.dropna(subset=['price']).tail(10).copy()
-            
+            df = pd.read_csv(self.hist_path, names=['code','name','score','price'], header=None).tail(10)
+            df['code'] = df['code'].astype(str).str.zfill(6)
             current_spot = ak.stock_zh_a_spot_em()
-            current_spot['最新价'] = pd.to_numeric(current_spot['最新价'], errors='coerce')
-            
-            feedback = []
-            for _, row in recent.iterrows():
-                code = str(row['code']).zfill(6)
-                spot = current_spot[current_spot['代码'] == code]
+            fb = []
+            for _, r in df.iterrows():
+                spot = current_spot[current_spot['代码'] == r['code']]
                 if not spot.empty:
-                    now_val = spot.iloc[0]['最新价']
-                    old_val = row['price']
-                    if pd.notna(now_val) and old_val > 0:
-                        profit = (float(now_val) / float(old_val) - 1) * 100
-                        feedback.append(f"{row['name']}({code}): {profit:.1f}%")
-            return " | ".join(feedback) if feedback else "计算中..."
-        except: return "反馈加载中"
+                    now_p = float(spot.iloc[0]['最新价'])
+                    profit = (now_p / float(r['price']) - 1) * 100
+                    fb.append(f"{r['name']}:{profit:.1f}%")
+            return " | ".join(fb) if fb else "等待行情数据"
+        except: return "复盘中..."
 
     def run(self):
-        # 补回时间戳并去掉冗余提示
-        print(f"\n🚀 [AI 进化选股引擎 V2.0] 启动：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        print(f"\n🚀 [AI 进化选股引擎 V2.0 - 千股扫描&强化版] 启动：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        fb = self._get_feedback()
-        print(f"📊 近期表现：{fb}")
+        # 1. 复盘近期表现
+        fb_str = self._get_feedback_str()
+        print(f"📊 近期表现：{fb_str}")
+        
+        # 2. 权重进化及详细显示
+        full_res = self.llm.evolve_strategy(fb_str, self.weights)
+        if full_res and isinstance(full_res, dict):
+            print(f"📈 权重自动优化详情：")
+            print(json.dumps(full_res, indent=4, ensure_ascii=False))
+            raw_w = full_res.get("新权重", full_res)
+            self.weights = {k: v for k, v in raw_w.items() if isinstance(v, (int, float))}
+        
+        # 3. 获取 AI 初筛标准
+        ai_keywords, ai_shape = self.llm.get_market_selection_criteria()
+        print(f"💡 AI 初筛建议：关键词({','.join(ai_keywords)}) | 形态({ai_shape})")
 
-        # 1. 自动进化权重
-        new_w = self.llm.evolve_strategy(fb, self.weights)
-        if new_w and all(k in new_w for k in self.weights):
-            self.weights = new_w
-            print(f"📈 权重自动优化：{self.weights}")
-
-        # 2. 静默获取热点（已删冗余打印）
-        _, hot_keywords = self.llm.analyze_market_hotspots()
-
-        # 3. 量化扫描
+        # 4. 全市场 1000 只活跃股技术扫描
+        print(f"🔍 正在执行全市场前 1000 只活跃股技术扫描...")
         spot_df = ak.stock_zh_a_spot_em()
-        spot_df = spot_df[(spot_df['成交额'] > 600000000) & (~spot_df['名称'].str.contains('ST|退'))].head(200)
+        spot_df = spot_df[~spot_df['名称'].str.contains('ST|退')].sort_values(by='成交额', ascending=False).head(1000)
 
-        pool = []
+        full_pool = []
         for _, row in spot_df.iterrows():
-            tsg = TradingSignalGenerator(row['代码'])
+            code = str(row['代码']).zfill(6)
+            tsg = TradingSignalGenerator(code) 
             tsg.fetch_stock_data()
-            inds = tsg.get_indicators(name=row['名称'], hot_keywords=hot_keywords)
+            inds = tsg.get_indicators(name=row['名称'], hot_keywords=ai_keywords)
             if not inds: continue
             
-            # 动态 5 因子综合计分
-            score = sum(inds.get(k, 0) * (v/100) for k, v in self.weights.items())
+            score = sum(inds.get(k, 0) * (float(v)/100) for k, v in self.weights.items())
             res = tsg.calculate_logic()
             if res:
-                res.update({'name': row['名称'], 'code': row['代码'], 'score': round(score, 1)})
-                pool.append(res)
+                res.update({'name': row['名称'], 'code': code, 'score': round(score, 1)})
+                full_pool.append(res)
 
-        # 4. 深度专家决策
-        candidates = sorted(pool, key=lambda x: x['score'], reverse=True)[:35]
-        cand_str = "\n".join([f"编号:{i} | {c['name']}({c['code']}) | 综合分:{c['score']}" for i, c in enumerate(candidates)])
-        indices = self.llm.ai_expert_selection(cand_str)
-        
-        top_5 = []
-        for idx in indices:
-            if idx < len(candidates) and candidates[idx]['code'] not in [x['code'] for x in top_5]:
-                top_5.append(candidates[idx])
-                if len(top_5) == 5: break
-        if not top_5: top_5 = candidates[:5]
+        # 5. 锁定 300 只精英池
+        elite_pool = sorted(full_pool, key=lambda x: x['score'], reverse=True)[:300]
+        elite_table = "\n".join([f"{c['code']} | {c['name']} | 评分:{c['score']} | 位阶:{c['position_pct']}%" for c in elite_pool])
 
-        # 5. 记录并输出
-        pd.DataFrame(top_5)[['code','name','score','price']].to_csv(self.hist_path, mode='a', index=False, quoting=csv.QUOTE_ALL)
+        # 6. DeepSeek 终极裁定
+        print(f"🧠 DeepSeek 正在从 300 只精英股中进行最终决策...")
+        final_decisions = self.llm.ai_deep_decision(f"{ai_keywords} - {ai_shape}", elite_table)
 
-        print("\n" + "★"*48 + " TOP 5 AI 深度决策报告 " + "★"*48)
-        for i, s in enumerate(top_5):
-            print(f"{i+1}. {s['code']} | {s['name']} | 🏆 综合评分: {s['score']}")
-            print(f"   🎯 操盘计划：预期涨幅: +{s['target_gain']}% | 目标价: {s['target']} | 止损价: {s['stop_loss']}")
-            print("-" * 110)
-        
-        if hot_keywords:
-            print(f"💡 AI 策略提示：已对齐今日热点关键词：{', '.join(hot_keywords[:5])}")
+        # 7. 打印结果 (修改为 10 只)
+        print("\n" + "🎯" * 15 + " 今日新推个股决策 (1000选300选10) " + "🎯" * 15)
+        top_count = 0
+        for code, reason in final_decisions.items():
+            match = next((x for x in elite_pool if str(x['code']) in str(code)), None)
+            if match:
+                print(f"{top_count+1}. {match['code']} | {match['name']} | 🏆 量化评分: {match['score']}")
+                print(f"   >>> 💡 专家深度理由: {reason}")
+                print(f"   >>> 💰 今日建议买入委托价: {match['entrust_buy']}")
+                print(f"   🎯 止盈目标: {match['target']} | 止损参考: {match['stop_loss']}")
+                print("-" * 80)
+                # 保存到记录
+                with open(self.hist_path, 'a', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow([match['code'], match['name'], match['score'], match['price']])
+                top_count += 1
+                if top_count >= 10: break
+
+        if top_count == 0:
+            print("⚠️ AI 决策返回异常，输出量化排名前 10 名：")
+            for i, s in enumerate(elite_pool[:10]):
+                print(f"{i+1}. {s['code']} | {s['name']} | 评分: {s['score']}")
 
 if __name__ == "__main__":
     AutoStrategyOptimizer().run()

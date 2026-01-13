@@ -7,50 +7,57 @@ class FreeLLMClient:
         self.api_key = LLM_CONFIG["api_key"]
         self.model_name = LLM_CONFIG["model_name"]
         
-        # 深度注入你提供的专业中国股市分析师提示词
-        self.expert_persona = """您是一位专业的中国股市分析师。具备A股涨跌停、T+1、行业轮动、监管环境及市场情绪的深度理解。
-您的分析重点包括：技术面分析、结合中国会计准则的基本面分析、评估政策影响的政策面分析，以及分析北向资金/融资融券的资金面分析。
-您需要特别考虑中国股市特色：涨跌停限制、ST风险、板块差异、国企改革及中美关系影响。"""
+        # 专家提示词：深度集成中国股市特色
+        self.expert_persona = """您是一位专业的中国股市分析师，专门分析A股、港股等中国资本市场。您具备深厚的中国股市知识和丰富的本土投资经验。
+
+您的专业领域包括：
+1. **A股市场分析**: 深度理解A股的独特性，包括涨跌停制度、T+1交易、融资融券等
+2. **中国经济政策**: 熟悉货币政策、财政政策对股市的影响机制
+3. **行业板块轮动**: 掌握中国特色的板块轮动规律和热点切换
+4. **监管环境**: 了解证监会政策、退市制度、注册制等监管变化
+5. **市场情绪**: 理解中国投资者的行为特征和情绪波动
+
+分析重点：
+- **技术面分析**: 使用精确的技术指标分析形态
+- **基本面分析**: 结合中国会计准则和财报特点
+- **政策面分析**: 评估政策变化对个股和板块的影响
+- **资金面分析**: 分析北向资金、融资融券、大宗交易等资金流向
+- **市场风格**: 判断当前是成长风格还是价值风格占优"""
 
     def _call_llm(self, prompt, system=None):
-        system = system or self.expert_persona
+        system_msg = system if system else self.expert_persona
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
-        payload = {"model": self.model_name, "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}], "temperature": 0.3}
+        payload = {
+            "model": self.model_name, 
+            "messages": [{"role": "system", "content": system_msg}, {"role": "user", "content": prompt}], 
+            "temperature": 0.3
+        }
         try:
             res = requests.post(self.api_url, headers=headers, json=payload, timeout=60)
             return res.json()['choices'][0]['message']['content']
         except: return None
 
-    def analyze_market_hotspots(self):
-        # 优化提示词，确保分隔符唯一
-        prompt = "总结今日A股最火的3个产业政策方向，并为每个方向提供2个核心关键词（如：半导体, 存储）。\n格式要求：[分析文本] ### 关键词1, 关键词2, 关键词3"
+    def get_market_selection_criteria(self):
+        prompt = "基于当前政策面、行业轮动和资金情绪，请给出今日选股的3个核心关键词和偏好的技术形态描述。格式：关键词1,关键词2,关键词3 ### 形态描述"
         res = self._call_llm(prompt)
-        
         if res and "###" in res:
-            # 修复点：使用 rsplit(',', 1) 的逻辑或处理多段分割
             parts = res.split("###")
-            # 取最后一部分作为关键词，其余部分合并为文本
-            keywords_part = parts[-1].strip()
-            analysis_text = " ".join(parts[:-1]).strip()
-            
-            # 清洗关键词，去掉可能的句号
-            keywords = [k.strip().replace("。", "") for k in keywords_part.split(",") if len(k.strip()) > 0]
-            return analysis_text, keywords
-        
-        return res if res else "分析失败", []
+            return [k.strip() for k in parts[0].split(",") if k.strip()], parts[1].strip()
+        return [], "放量突破"
 
     def evolve_strategy(self, history_str, current_weights):
-        # 支持 5 个权重的进化逻辑
-        prompt = f"历史表现：{history_str}。当前权重：{current_weights}。请微调权重。要求：返回JSON，Key必须是：'趋势'、'动能'、'成交'、'弹性'、'专家'。"
-        res = self._call_llm(prompt, "你是一个量化策略优化专家")
+        prompt = f"近期表现：{history_str}。当前权重：{current_weights}。请作为一个专业的量化专家微调权重。必须返回包含'调整说明'和'新权重'（包含趋势,动能,成交,弹性,专家）的JSON格式。"
+        res = self._call_llm(prompt, system="您是专门负责因子权重优化的量化科学家")
         try:
             match = re.search(r'\{.*\}', res, re.DOTALL)
             return json.loads(match.group()) if match else None
         except: return None
 
-    def ai_expert_selection(self, context):
-        prompt = f"【量化候选池】:\n{context}\n\n请基于你作为中国股市专家的判断，选出5个最具爆发潜力的编号。直接返回编号，逗号分隔。"
+    def ai_deep_decision(self, criteria, candidates_table):
+        # 核心修改：明确要求选出 10 只个股
+        prompt = f"""【今日选股审美】: {criteria}\n\n【精英备选池 (前300名)】:\n{candidates_table}\n\n请结合专家身份，从以上候选名单中选出10只逻辑最硬、爆发潜力最大的个股。返回JSON格式，Key为代码，Value为简短推荐理由。"""
         res = self._call_llm(prompt)
         try:
-            return [int(x) for x in re.findall(r'\d+', res)]
-        except: return []
+            match = re.search(r'\{.*\}', res, re.DOTALL)
+            return json.loads(match.group()) if match else {}
+        except: return {}
