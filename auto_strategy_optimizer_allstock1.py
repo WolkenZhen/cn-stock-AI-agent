@@ -11,7 +11,7 @@ warnings.filterwarnings('ignore')
 class AutoStrategyOptimizer:
     def __init__(self):
         self.llm = FreeLLMClient()
-        # 初始权重，后续由AI根据回馈自动调整
+        # 初始因子权重
         self.weights = {"趋势": 30, "动能": 20, "成交": 15, "弹性": 15, "专家": 20}
         self.log_dir = "strategy_log"
         self.hist_path = os.path.join(self.log_dir, "selection_history.csv")
@@ -19,60 +19,59 @@ class AutoStrategyOptimizer:
 
     def check_market_risk(self):
         """
-        深度大盘风控：分析上证指数(sh000001)近30个交易日走势
-        返回判定结果及风险标志
+        [大盘风控模块] 分析上证指数(sh000001)近30个交易日走势
+        判定逻辑：
+        - 若现价在20日均线下且均线向下：停止买入
+        - 若近30日跌幅超过5%：停止买入
         """
-        print(f"📊 正在执行大盘基本面深度分析 (过去30个交易日)...")
+        print(f"📊 正在深度分析大盘基本面趋势 (近30个交易日)...")
         try:
-            # 抓取足够数据计算均线
+            # 获取上证指数历史数据
             df_index = ak.stock_zh_index_daily(symbol="sh000001")
-            if df_index.empty: return "数据获取失败", False
+            if df_index.empty: return "未知状态", False
 
-            # 计算关键趋势指标
+            # 计算MA20（月线）
             df_index['ma20'] = df_index['close'].rolling(20).mean()
-            
             recent_30 = df_index.tail(30).copy()
-            current_price = recent_30['close'].iloc[-1]
+            
+            curr_p = recent_30['close'].iloc[-1]
             ma20_now = recent_30['ma20'].iloc[-1]
-            ma20_prev = recent_30['ma20'].iloc[-5] # 5天前的20日线位置
+            ma20_prev = recent_30['ma20'].iloc[-5] # 5天前的位置看斜率
             
-            # 判定条件
-            is_ma20_down = ma20_now < ma20_prev  # 20日线拐头向下
-            is_below_ma = current_price < ma20_now # 价格在20日线下方
+            # 趋势指标
+            is_downward = ma20_now < ma20_prev  # 均线向下
+            is_below_ma = curr_p < ma20_now     # 价格在均线下
             
-            # 区间涨跌幅
-            start_price = recent_30['close'].iloc[0]
-            period_return = (current_price / start_price - 1) * 100
+            # 涨跌幅统计
+            start_p = recent_30['close'].iloc[0]
+            period_ret = (curr_p / start_p - 1) * 100
             
-            print(f"   >>> 上证指数: {current_price:.2f} | 20日线: {ma20_now:.2f}")
-            print(f"   >>> 近30日区间涨跌幅: {period_return:.2f}%")
+            print(f"   >>> 当前指数: {curr_p:.2f} | 20日均线: {ma20_now:.2f}")
+            print(f"   >>> 近30日涨跌幅: {period_ret:.2f}% | 区间波幅: {((recent_30['high'].max()/recent_30['low'].min()-1)*100):.2f}%")
 
-            decision = "可以买入"
-            is_stop = False
+            decision = "🚀 可以买入 (趋势向好或处于反弹区间)"
+            is_risky = False
 
-            if is_below_ma and is_ma20_down:
-                decision = "⛔ 停止买入 (趋势严重破位，震荡下行中)"
-                is_stop = True
-            elif period_return < -5:
-                decision = "⚠️ 停止买入 (短期跌幅过大，市场情绪极差)"
-                is_stop = True
+            if is_below_ma and is_downward:
+                decision = "⛔ 停止买入 (市场处于震荡下行区间，风险极大)"
+                is_risky = True
+            elif period_ret < -5:
+                decision = "⚠️ 停止买入 (短期跌幅过猛，建议空仓避险)"
+                is_risky = True
             elif is_below_ma:
-                decision = "⚖️ 谨慎买入 (处于均线下方，建议轻仓)"
-            else:
-                decision = "🚀 可以买入 (趋势良好或处于企稳区间)"
-
+                decision = "⚖️ 谨慎买入 (处于均线下方，建议极小仓位)"
+            
             print("\n" + "═"*60)
             print(f"📢 大盘风控决策：【 {decision} 】")
             print("═"*60 + "\n")
             
-            return decision, is_stop
-
+            return decision, is_risky
         except Exception as e:
-            print(f"❌ 大盘数据获取异常: {e}")
-            return "可以买入 (默认)", False
+            print(f"❌ 大盘分析异常: {e}")
+            return "可以买入 (数据异常)", False
 
     def _get_feedback_str(self):
-        """获取近期选股的实盘反馈用于AI进化"""
+        """[复盘模块] 获取历史选股表现"""
         if not os.path.exists(self.hist_path): return "暂无历史记录"
         try:
             df = pd.read_csv(self.hist_path, names=['code','name','score','price'], header=None).tail(10)
@@ -85,36 +84,38 @@ class AutoStrategyOptimizer:
                     now_p = float(spot.iloc[0]['最新价'])
                     profit = (now_p / float(r['price']) - 1) * 100
                     fb.append(f"{r['name']}:{profit:.1f}%")
-            return " | ".join(fb) if fb else "等待行情验证"
+            return " | ".join(fb) if fb else "等待行情数据"
         except: return "复盘分析中..."
 
     def run(self):
         print(f"\n🚀 [AI 进化选股引擎 V2.5 - 全市场版] 启动：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
-        # 1. 大盘风控判定
-        market_decision, stop_flag = self.check_market_risk()
+        # 1. 大盘风控分析
+        market_decision, stop_buy = self.check_market_risk()
         
-        # 2. 权重自动进化
+        # 2. 策略反馈与权重进化
         fb_str = self._get_feedback_str()
-        print(f"📊 历史策略反馈：{fb_str}")
+        print(f"📊 近期表现：{fb_str}")
+        
         full_res = self.llm.evolve_strategy(fb_str, self.weights)
         if full_res and isinstance(full_res, dict):
-            print(f"📈 因子权重动态优化详情：")
+            print(f"📈 权重自动优化详情：")
             print(json.dumps(full_res, indent=4, ensure_ascii=False))
             raw_w = full_res.get("新权重", full_res)
             self.weights = {k: v for k, v in raw_w.items() if isinstance(v, (int, float))}
         
-        # 3. 获取 AI 初筛指导
+        # 3. AI 初筛审美获取
         ai_keywords, ai_shape = self.llm.get_market_selection_criteria()
-        print(f"💡 AI 今日审美偏好：关键词({','.join(ai_keywords)}) | 技术形态({ai_shape})")
+        print(f"💡 AI 今日审美：关键词({','.join(ai_keywords)}) | 形态({ai_shape})")
 
-        # 4. 全市场 1000 只活跃股扫描 (包含科创板、创业板)
-        print(f"🔍 正在执行全市场(沪深/创业/科创)前 1000 只活跃股扫描...")
+        # 4. 全市场扫描 (不剔除创业板/科创板)
+        print(f"🔍 正在执行全市场(包含主板/创业/科创)前 1000 只活跃股扫描...")
         spot_df = ak.stock_zh_a_spot_em()
-        # 排除 ST 和 退市股
+        
+        # 过滤垃圾股
         spot_df = spot_df[~spot_df['名称'].str.contains('ST|退')]
         
-        # 选出成交额前 1000 名的活跃品种
+        # 按成交额排序取前 1000（保证流动性）
         spot_df = spot_df.sort_values(by='成交额', ascending=False).head(1000)
 
         full_pool = []
@@ -122,56 +123,51 @@ class AutoStrategyOptimizer:
             code = str(row['代码']).zfill(6)
             tsg = TradingSignalGenerator(code) 
             tsg.fetch_stock_data()
+            # 获取技术因子
             inds = tsg.get_indicators(name=row['名称'], hot_keywords=ai_keywords)
             if not inds: continue
             
-            # 计算综合量化得分
+            # 量化评分计算
             score = sum(inds.get(k, 0) * (float(v)/100) for k, v in self.weights.items())
             res = tsg.calculate_logic()
             if res:
                 res.update({'name': row['名称'], 'code': code, 'score': round(score, 1)})
                 full_pool.append(res)
 
-        # 5. 锁定 300 只精英池 (量化评分最高者)
+        # 5. 锁定 300 只精英池
         elite_pool = sorted(full_pool, key=lambda x: x['score'], reverse=True)[:300]
-        # 传送给 AI 决策的压缩表（取前 100 供 AI 精选）
+        # 传送压缩后的数据给AI，取前100进行精选
         elite_table = "\n".join([f"{c['code']} | {c['name']} | 评分:{c['score']} | 位阶:{c['position_pct']}%" for c in elite_pool[:100]])
 
-        # 6. DeepSeek 终极裁定 (从300只中选出最强10只)
-        print(f"🧠 DeepSeek 正在从 300 只精英池中甄选 10 强决策...")
+        # 6. DeepSeek 终极裁定 (选出10只)
+        print(f"🧠 DeepSeek 正在从 300 只精英股中进行最终决策...")
         final_decisions = self.llm.ai_deep_decision(f"{ai_keywords} - {ai_shape}", elite_table)
 
-        # 7. 打印结果
-        print("\n" + "🎯" * 15 + " 今日全市场 10 强个股决策 " + "🎯" * 15)
+        # 7. 打印最终结果
+        print("\n" + "🎯" * 15 + " 今日新推个股决策 (1000选300选10) " + "🎯" * 15)
         
-        if stop_flag:
+        if stop_buy:
             print("\n" + "!"*60)
-            print(f"🚨 风险提示：当前大盘环境被判定为【 {market_decision} 】")
-            print("🚨 选股结果仅供观察，实盘请严格控制仓位，避免在震荡下行区间重仓！")
+            print(f"🚨 避险警告：大盘目前处于【 {market_decision} 】")
+            print("🚨 此时买入风险极高，以下建议仅作技术研究参考，不建议实盘操作！")
             print("!"*60 + "\n")
 
         top_count = 0
         for code, reason in final_decisions.items():
-            # 兼容性查找
+            # 兼容性匹配代码
             match = next((x for x in elite_pool if str(x['code']) in str(code)), None)
             if match:
-                print(f"{top_count+1}. {match['code']} | {match['name']} | 🏆 综合评分: {match['score']}")
-                print(f"   >>> 💡 专家逻辑理由: {reason}")
-                print(f"   >>> 💰 今日买入参考价: {match['entrust_buy']}")
-                print(f"   🎯 止盈目标: {match['target']} | 止损参考: {match['stop_loss']}")
+                print(f"{top_count+1}. {match['code']} | {match['name']} | 🏆 评分: {match['score']}")
+                print(f"   >>> 💡 专家理由: {reason}")
+                print(f"   >>> 💰 买入参考价: {match['entrust_buy']} | 目标: {match['target']}")
                 print("-" * 80)
                 
-                # 保存历史记录以便后续进化
+                # 记录到历史记录（供下次动态调整权重）
                 with open(self.hist_path, 'a', newline='') as f:
                     csv.writer(f).writerow([match['code'], match['name'], match['score'], match['price']])
                 
                 top_count += 1
                 if top_count >= 10: break
-
-        if top_count == 0:
-            print("⚠️  AI 决策层未返回有效结果，以下是量化评分排名前10的个股供参考：")
-            for i, item in enumerate(elite_pool[:10]):
-                print(f"{i+1}. {item['code']} | {item['name']} | 评分: {item['score']}")
 
 if __name__ == "__main__":
     AutoStrategyOptimizer().run()
