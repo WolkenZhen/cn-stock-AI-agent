@@ -15,7 +15,7 @@ TARGET_HORIZON = 3       # 重点考核 T+3 的收益率 (实现波段进化)
 
 LLM_CONFIG = {
     "api_url": "https://api.deepseek.com/chat/completions",
-    "api_key": "sk-a84f7971d767458cafeb3e757612ea16", 
+    "api_key": "", 
     "model_name": "deepseek-chat",
 }
 
