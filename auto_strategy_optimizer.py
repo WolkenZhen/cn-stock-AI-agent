@@ -1,7 +1,8 @@
 import pandas as pd
 import akshare as ak
 import os, warnings, csv, json, time
-from datetime import datetime
+from datetime import datetime, timedelta
+from config import *
 from trading_signal import TradingSignalGenerator
 from llm_client import FreeLLMClient
 
@@ -10,120 +11,179 @@ warnings.filterwarnings('ignore')
 class AutoStrategyOptimizer:
     def __init__(self):
         self.llm = FreeLLMClient()
-        self.weights = {"趋势": 30, "动能": 20, "成交": 15, "弹性": 15, "专家": 20}
-        self.log_dir = "strategy_log"
-        self.hist_path = os.path.join(self.log_dir, "selection_history.csv")
-        if not os.path.exists(self.log_dir): os.makedirs(self.log_dir)
+        if not os.path.exists(LOG_DIR): os.makedirs(LOG_DIR)
+        
+        print("⏳ 正在探测今日市场环境 (技术指标+RAG)...")
+        self.hot_sectors, self.market_status = self.llm.fetch_market_analysis()
+        
+        # 核心升级：多周期回测
+        self.update_historical_prices()
+        self.weights = self._evolve_weights_via_deepseek()
 
-    def get_market_sentiment(self):
+    def update_historical_prices(self):
         """
-        [大盘引力引擎] 计算市场情绪系数
-        逻辑：跌势中系数 < 1.0 (压制评分)，涨势中系数 > 1.0 (增强评分)
+        深度回测：不仅看次日，还追踪 T+3, T+5 表现
         """
-        print(f"📡 正在探测大盘引力场 (上证指数)...")
+        if not os.path.exists(HIST_PATH): return
         try:
-            df = ak.stock_zh_index_daily(symbol="sh000001")
-            recent = df.tail(20).copy()
-            ma20 = recent['close'].mean()
-            current_p = recent['close'].iloc[-1]
+            df = pd.read_csv(HIST_PATH, on_bad_lines='skip')
+            updated = False
+            today = datetime.now()
             
-            # 计算连跌天数
-            last_3_days = recent['close'].tail(3).tolist()
-            is_dropping = all(last_3_days[i] < last_3_days[i-1] for i in range(1, len(last_3_days)))
+            # 确保有 T+3, T+5 列
+            if 'price_t3' not in df.columns: df['price_t3'] = 0.0
+            if 'price_t5' not in df.columns: df['price_t5'] = 0.0
             
-            # 基础系数：现价在20日线上方为1.1，下方为0.8
-            base_factor = 1.1 if current_p > ma20 else 0.8
-            # 连跌惩罚
-            if is_dropping: base_factor *= 0.85 
+            print(f"⏳ 正在深度回溯历史选股表现 (追踪 T+1~T+5 走势)...")
             
-            status = "📉 市场低迷" if base_factor < 1.0 else "🚀 市场活跃"
-            print(f"   >>> 当前大盘状态: {status} | 评分系数: {base_factor:.2f}")
-            return base_factor
-        except: return 1.0
+            for index, row in df.iterrows():
+                # 只处理尚未填满数据的旧记录
+                if row['next_day_price'] == 0 or row['price_t3'] == 0:
+                    record_date = datetime.strptime(row['date'], "%Y-%m-%d")
+                    days_passed = (today - record_date).days
+                    
+                    if days_passed > 1: # 至少过了一天
+                        code = str(row['code']).zfill(6)
+                        start_dt = record_date.strftime("%Y%m%d")
+                        end_dt = today.strftime("%Y%m%d")
+                        
+                        try:
+                            # 获取区间日线
+                            stock_df = ak.stock_zh_a_hist(symbol=code, period="daily", start_date=start_dt, end_date=end_dt, adjust="qfq")
+                            
+                            # 填补 T+1
+                            if len(stock_df) >= 2 and row['next_day_price'] == 0:
+                                df.at[index, 'next_day_price'] = stock_df.iloc[1]['收盘']
+                                updated = True
+                            
+                            # 填补 T+3
+                            if len(stock_df) >= 4 and row['price_t3'] == 0:
+                                df.at[index, 'price_t3'] = stock_df.iloc[3]['收盘']
+                                updated = True
+                                
+                            # 填补 T+5
+                            if len(stock_df) >= 6 and row['price_t5'] == 0:
+                                df.at[index, 'price_t5'] = stock_df.iloc[5]['收盘']
+                                updated = True
+                                
+                        except: pass
+            
+            if updated: 
+                df.to_csv(HIST_PATH, index=False)
+                print("✅ 历史波段数据更新完毕。")
+                
+        except Exception as e: 
+            print(f"⚠️ 历史回测跳过: {e}")
 
-    def calculate_three_day_high(self, match_data, score):
-        """三日委托卖出价算法 (基于ATR与动态评分)"""
-        price = match_data['price']
-        atr = match_data.get('atr', price * 0.03)
-        # 评分越高，预测冲高溢价越高
-        score_multiplier = 1 + (score / 1500) 
-        pred_high = max(match_data.get('resistance', price * 1.05), price + (atr * 1.8 * score_multiplier))
-        return round(pred_high, 2)
+    def _evolve_weights_via_deepseek(self):
+        """
+        深度进化：基于多周期表现优化权重
+        """
+        try:
+            df = pd.read_csv(HIST_PATH, on_bad_lines='skip')
+            # 筛选出至少 T+1 有价格的记录
+            valid_df = df[df['next_day_price'] > 0].tail(EVOLUTION_LOOKBACK)
+            
+            history_summary = ""
+            if not valid_df.empty:
+                for _, row in valid_df.iterrows():
+                    # 计算多周期收益
+                    buy = row['buy_price']
+                    p1 = row['next_day_price']
+                    p3 = row.get('price_t3', 0)
+                    
+                    ret1 = (p1 - buy) / buy * 100
+                    ret3 = (p3 - buy) / buy * 100 if p3 > 0 else 0
+                    
+                    # 结果标签：不仅看涨跌，还看是否是大牛股(T+3 > 15%)
+                    label = "大妖股🚀" if ret3 > 15 else ("波段涨" if ret3 > 5 else ("一日游" if ret1 > 0 and ret3 < 0 else "亏损"))
+                    
+                    history_summary += f"{row['name']}: {label} | T+1:{ret1:.1f}% T+3:{ret3:.1f}% | 因子:{ {k: row.get(k,0) for k in DEFAULT_WEIGHTS} }\n"
+            
+            market_ctx = f"热点:{self.hot_sectors}, 状态:{self.market_status}"
+            print(f"🧠 DeepSeek 正在进行【Transformer自注意力进化】...")
+            print(f"   >>> 目标: 识别能穿越 T+1 到 T+{TARGET_HORIZON} 的波段因子")
+            
+            # 调用升级版的权重优化接口
+            new_weights = self.llm.optimize_weights_deep_evolution(history_summary, DEFAULT_WEIGHTS, market_ctx)
+            return new_weights if new_weights else DEFAULT_WEIGHTS
+            
+        except Exception as e:
+            print(f"⚠️ 权重优化降级: {e}")
+            return DEFAULT_WEIGHTS
 
-    def run(self):
-        print(f"\n🚀 [AI 深度挖掘量化引擎 V3.0] 启动：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        # 1. 获取市场情绪系数
-        market_factor = self.get_market_sentiment()
-        
-        # 2. AI 获取今日审美
-        ai_keywords, ai_shape = self.llm.get_market_selection_criteria()
-        
-        # 3. 扫描主板 1000 活跃股
-        print(f"🔍 正在深度挖掘 1000 只主板活跃股 (过滤创业/科创)...")
-        spot_df = ak.stock_zh_a_spot_em()
-        spot_df['code_str'] = spot_df['代码'].astype(str).str.zfill(6)
-        # 仅限沪深主板
-        main_df = spot_df[~spot_df['code_str'].str.startswith(('30', '688', '43', '83', '87', '92'))]
-        active_stocks = main_df.sort_values(by='成交额', ascending=False).head(1000)
+    def run_daily_selection(self):
+        today = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"🚀 [AI 深A主板短线进攻引擎] 启动：{today}")
+        print(f"📡 大盘操作建议: {self.market_status} | 核心热点: {self.hot_sectors}")
+        print(f"⚖️  DeepSeek 进化权重: {self.weights}")
+        print("🔍 正在扫描全市场活跃深A主板股 (已启用涨停过滤)...")
 
-        full_pool = []
-        for _, row in active_stocks.iterrows():
-            code = row['code_str']
+        try:
+            pool = ak.stock_zh_a_spot_em()
+            # 基础池过滤
+            main_board = pool[
+                (pool['代码'].str.startswith('00')) & 
+                (pool['涨跌幅'] < 9.5) & 
+                (pool['涨跌幅'] > 2.0) & # 剔除织布机
+                (~pool['名称'].str.contains('ST')) &
+                (pool['成交额'] > 100000000)
+            ].sort_values(by='涨跌幅', ascending=False).head(100) # 扩大扫描范围
+        except: return
+
+        candidates = []
+        for _, row in main_board.iterrows():
+            code = row['代码']
             tsg = TradingSignalGenerator(code)
             tsg.fetch_stock_data()
-            inds = tsg.get_indicators(name=row['名称'], hot_keywords=ai_keywords)
-            if not inds: continue
+            factors = tsg.get_indicators()
             
-            # 计算量化基础分
-            raw_score = sum(inds.get(k, 0) * (float(v)/100) for k, v in self.weights.items())
-            # 应用市场系数：如果是跌势，评分会大幅缩水
-            adjusted_score = round(raw_score * market_factor, 1)
-            
-            res = tsg.calculate_logic()
-            if res:
-                res.update({'name': row['名称'], 'code': code, 'score': adjusted_score})
-                full_pool.append(res)
+            if factors:
+                score_ai, reason_ai, alpha = self.llm.get_ai_expert_factor(row.to_json())
+                factors["专家因子"] = score_ai
+                
+                final_score = sum(factors[k] * self.weights.get(k, 20) / 100 for k in factors)
+                
+                # 传入当前权重给 logic 计算，以便动态调整止盈位
+                prices = tsg.calculate_logic(self.weights) 
+                
+                candidates.append({
+                    'code': code, 'name': row['名称'], 'final_score': round(final_score + alpha, 1),
+                    'ai_reason': reason_ai, **factors, **prices
+                })
+                if len(candidates) >= 15: break
 
-        # 4. 取前 50 名进入 DeepSeek 深度深度评审 (增加挖掘深度)
-        elite_pool = sorted(full_pool, key=lambda x: x['score'], reverse=True)[:50]
-        elite_table = "\n".join([f"{c['code']} | {c['name']} | 量化分:{c['score']}" for c in elite_pool])
+        top_10 = sorted(candidates, key=lambda x: x['final_score'], reverse=True)[:10]
 
-        # 5. DeepSeek 终极裁定与 AI 二次评分
-        print(f"🧠 DeepSeek 正在对前 50 名进行二次评分与逻辑挖掘...")
-        ai_results = self.llm.ai_deep_mining(f"{ai_keywords} - {ai_shape}", elite_table)
+        print("\n" + "🥇" * 15 + " 深A主板进攻 TOP 10 (波段潜力) " + "🥇" * 15)
+        for i, s in enumerate(top_10):
+            print(f"{i+1}. {s['code']} | {s['name']} | 🏆 总分: {s['final_score']}")
+            print(f"   [因子] 量价:{s['量价爆发']} 趋势:{s['趋势强度']} 资金:{s['资金流向']} 专家:{s['专家因子']}")
+            print(f"   >>> 💡 AI: {s['ai_reason']}")
+            print(f"   >>> 💰 当日委托买入: {s['entrust_buy']} | 📈 T+1委托卖出: {s['entrust_sell_t1']}")
+            print(f"   >>> 🛡️ 止损参考: {s['stop_loss']}")
+            print("-" * 80)
 
-        # 6. 整合并最终排序
-        final_list = []
-        for item in elite_pool:
-            code = item['code']
-            if code in ai_results:
-                # 最终总分 = 量化分 + AI 逻辑分
-                item['ai_reason'] = ai_results[code]['reason']
-                item['final_score'] = item['score'] + ai_results[code].get('alpha_score', 0)
-                final_list.append(item)
+        # 记录时预留 T+3, T+5 列
+        self._log_history(top_10)
 
-        # 严格降序排列
-        final_list = sorted(final_list, key=lambda x: x['final_score'], reverse=True)[:10]
-
-        # 7. 打印结果
-        print("\n" + "🥇" * 15 + " 深度量化挖掘 TOP 10 (按综合评分降序) " + "🥇" * 15)
+    def _log_history(self, top_stocks):
+        file_exists = os.path.exists(HIST_PATH)
+        # 扩展字段
+        fieldnames = ['date', 'code', 'name', 'buy_price', 'next_day_price', 'price_t3', 'price_t5'] + list(DEFAULT_WEIGHTS.keys())
         
-        if market_factor < 1.0:
-            print(f"\n⚠️ 风险警示：当前市场环境弱，整体评分已按 {market_factor:.2f} 系数下调，建议轻仓或观望。")
-
-        for i, match in enumerate(final_list):
-            three_day_high = self.calculate_three_day_high(match, match['final_score'])
-            print(f"{i+1}. {match['code']} | {match['name']} | 🏆 综合评分: {match['final_score']}")
-            print(f"   >>> 💡 DeepSeek挖掘逻辑: {match['ai_reason']}")
-            print(f"   >>> 💰 当日建议买入委托价: {match['entrust_buy']}")
-            print(f"   >>> 📈 三日委托卖出价: {three_day_high} (预测冲高点)")
-            print(f"   >>> 🎯 止盈目标: {match['target']} | 止损参考: {match['stop_loss']}")
-            print("-" * 85)
-            
-            # 记录
-            with open(self.hist_path, 'a', newline='') as f:
-                csv.writer(f).writerow([match['code'], match['name'], match['final_score'], match['price']])
+        with open(HIST_PATH, 'a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists: writer.writeheader()
+            for s in top_stocks:
+                row = {
+                    'date': datetime.now().strftime("%Y-%m-%d"), 
+                    'code': s['code'], 'name': s['name'], 'buy_price': s['price'], 
+                    'next_day_price': 0, 'price_t3': 0, 'price_t5': 0 # 初始占位
+                }
+                for k in DEFAULT_WEIGHTS: row[k] = s.get(k, 0)
+                writer.writerow(row)
 
 if __name__ == "__main__":
-    AutoStrategyOptimizer().run()
+    optimizer = AutoStrategyOptimizer()
+    optimizer.run_daily_selection()
